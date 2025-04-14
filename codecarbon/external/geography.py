@@ -12,6 +12,14 @@ import requests
 from codecarbon.core.cloud import get_env_cloud_details
 from codecarbon.external.logger import logger
 
+PROXY = "http://127.0.0.1:7890"
+
+proxies = {
+    "http": PROXY,
+    "https": PROXY,
+}
+
+
 
 @dataclass
 class CloudMetadata:
@@ -91,7 +99,7 @@ class GeoMetadata:
     @classmethod
     def from_geo_js(cls, url: str) -> "GeoMetadata":
         try:
-            response: Dict = requests.get(url, timeout=0.5).json()
+            response: Dict = requests.get(url, timeout=10).json()
 
             return cls(
                 country_iso_code=response["country_code3"].upper(),
@@ -110,13 +118,13 @@ class GeoMetadata:
         geo_url_backup = "https://ip-api.com/json/"
 
         try:
-            geo_response: Dict = requests.get(geo_url_backup, timeout=0.5).json()
+            geo_response: Dict = requests.get(geo_url_backup, timeout=10, proxies=proxies).json()
             country_name = geo_response["country"]
 
             # The previous request does not return the three-letter country code
             country_code_3_url = f"https://api.first.org/data/v1/countries?q={urllib.parse.quote_plus(country_name)}&scope=iso"
             country_code_response: Dict = requests.get(
-                country_code_3_url, timeout=0.5
+                country_code_3_url, timeout=10, proxies=proxies
             ).json()
 
             return cls(
