@@ -889,6 +889,31 @@ class EmissionsTracker(BaseEmissionsTracker):
     using the `geojs` API
     """
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        # 创建 GeoMetadata 实例 (你可以设置合适的经纬度)
+        self.geo_metadata = GeoMetadata(country_iso_code="CHN", latitude=31.2304, longitude=121.4737)  # 示例：上海
+
+    def start(self):
+        # 获取电网区域并记录日志
+        grid_area = self.geo_metadata.get_grid_area()
+        
+        # 输出经纬度
+        latitude = self.geo_metadata.latitude
+        longitude = self.geo_metadata.longitude
+
+        # 打印电网区域和经纬度
+        logger.info(f"电网区域: {grid_area}")  # 这会输出电网区域
+        # print(f"电网区域: {grid_area}")  # 直接打印电网区域到控制台
+
+        # 输出经纬度
+        logger.info(f"经纬度: {latitude}, {longitude}")  # 记录经纬度信息
+        # print(f"经纬度: {latitude}, {longitude}")  # 直接打印经纬度到控制台
+
+        # 调用父类的 start 方法
+        super().start()
+
     def _get_geo_metadata(self) -> GeoMetadata:
         return GeoMetadata.from_geo_js(self._data_source.geo_js_url)
 
@@ -926,7 +951,6 @@ class TaskEmissionsTracker:
         self.tracker.stop_task()
         if self.is_default_tracker:
             self.tracker.stop()
-
 
 def track_emissions(
     fn: Callable = None,
