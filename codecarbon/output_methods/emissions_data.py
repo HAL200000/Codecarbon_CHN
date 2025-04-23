@@ -1,6 +1,7 @@
 import json
 from collections import OrderedDict
 from dataclasses import dataclass
+from typing import Optional
 
 
 @dataclass
@@ -41,6 +42,10 @@ class EmissionsData:
     tracking_mode: str
     on_cloud: str = "N"
     pue: float = 1
+    grid_area: Optional[str] = None
+    grid_emission_factor: Optional[float] = None
+    grid_emission_factor_mode: Optional[str] = None
+
 
     @property
     def values(self) -> OrderedDict:

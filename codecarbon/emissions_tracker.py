@@ -171,6 +171,7 @@ class BaseEmissionsTracker(ABC):
         default_cpu_power: Optional[int] = _sentinel,
         pue: Optional[int] = _sentinel,
         allow_multiple_runs: Optional[bool] = _sentinel,
+        grid_emission_mode: Optional[str] = _sentinel,
     ):
         """
         :param project_name: Project name for current experiment run, default name
@@ -231,6 +232,7 @@ class BaseEmissionsTracker(ABC):
         # logger.info("base tracker init")
         self._external_conf = get_hierarchical_config()
         self._set_from_conf(allow_multiple_runs, "allow_multiple_runs", False, bool)
+        
         if self._allow_multiple_runs:
             logger.warning(
                 "Multiple instances of codecarbon are allowed to run at the same time."
@@ -275,8 +277,10 @@ class BaseEmissionsTracker(ABC):
         self._set_from_conf(default_cpu_power, "default_cpu_power")
         self._set_from_conf(pue, "pue", 1.0, float)
         self._set_from_conf(
-            experiment_id, "experiment_id", "5b0fa12a-3dd7-45bb-9766-cc326314d9f1"
+            experiment_id, "experiment_id", "0"
         )
+        self._set_from_conf(grid_emission_mode, "grid_emission_mode", "om", str)
+
 
         assert self._tracking_mode in ["machine", "process"]
         set_logger_level(self._log_level)
@@ -346,7 +350,7 @@ class BaseEmissionsTracker(ABC):
             self._conf["provider"] = cloud.provider
 
         self._emissions: Emissions = Emissions(
-            self._data_source, self._co2_signal_api_token
+            self._data_source, self._co2_signal_api_token, grid_emission_mode=self._grid_emission_mode
         )
         self._init_output_methods(api_key=self._api_key)
 
@@ -415,6 +419,10 @@ class BaseEmissionsTracker(ABC):
         if self._start_time is not None:
             logger.warning("Already started tracking")
             return
+        
+         # ✅ 主动调用 get_grid_area，确保 geo 中的因子和模式正确缓存
+        if self._geo:
+            self._geo.get_grid_area(mode=self._grid_emission_mode)
 
         self._last_measured_time = self._start_time = time.perf_counter()
         # Read initial energy for hardware
@@ -583,16 +591,13 @@ class BaseEmissionsTracker(ABC):
                 handler.task_out(task_emissions_data, experiment_name)
 
     def _prepare_emissions_data(self) -> EmissionsData:
-        """
-        :delta: If 'True', return only the delta comsumption since the last call.
-        """
         cloud: CloudMetadata = self._get_cloud_metadata()
         duration: Time = Time.from_seconds(time.perf_counter() - self._start_time)
 
         if cloud.is_on_private_infra:
             emissions = self._emissions.get_private_infra_emissions(
                 self._total_energy, self._geo
-            )  # float: kg co2_eq
+            )
             country_name = self._geo.country_name
             country_iso_code = self._geo.country_iso_code
             region = self._geo.region
@@ -609,14 +614,29 @@ class BaseEmissionsTracker(ABC):
             on_cloud = "Y"
             cloud_provider = cloud.provider
             cloud_region = cloud.region
+
+        # ✅ 新增：电网区域 & 排放因子（仅限中国）
+        grid_area = None
+        grid_emission_factor = None
+        grid_emission_factor_mode = None  # ✅ 防止未定义引用
+        if (
+            self._geo
+            and self._geo.country_name
+            and "china" in self._geo.country_name.lower()
+        ):
+            # self._geo.get_grid_area()  # ⚠️ 主动触发定位
+            grid_area = getattr(self._geo, "grid_area", None)
+            grid_emission_factor = getattr(self._geo, "grid_emission_factor", None)
+            grid_emission_factor_mode = getattr(self._geo, "grid_emission_factor_mode", None)
+
         total_emissions = EmissionsData(
             timestamp=datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
             project_name=self._project_name,
             run_id=str(self.run_id),
             experiment_id=str(self._experiment_id),
             duration=duration.seconds,
-            emissions=emissions,  # kg
-            emissions_rate=emissions / duration.seconds,  # kg/s
+            emissions=emissions,
+            emissions_rate=emissions / duration.seconds,
             cpu_power=self._cpu_power.W,
             gpu_power=self._gpu_power.W,
             ram_power=self._ram_power.W,
@@ -642,9 +662,14 @@ class BaseEmissionsTracker(ABC):
             ram_total_size=self._conf.get("ram_total_size"),
             tracking_mode=self._conf.get("tracking_mode"),
             pue=self._pue,
+            grid_area=grid_area,  # ✅ 新字段
+            grid_emission_factor=grid_emission_factor,  # ✅ 新字段
+            grid_emission_factor_mode=grid_emission_factor_mode # ✅ 新字段
         )
+
         logger.debug(total_emissions)
         return total_emissions
+
 
     def _compute_emissions_delta(self, total_emissions: EmissionsData) -> EmissionsData:
         delta_emissions: EmissionsData = total_emissions

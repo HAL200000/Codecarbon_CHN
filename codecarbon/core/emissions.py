@@ -9,6 +9,8 @@ https://github.com/responsibleproblemsolving/energy-usage
 from typing import Dict, Optional
 
 import pandas as pd
+import json
+import os
 
 from codecarbon.core import co2_signal
 from codecarbon.core.units import EmissionsPerKWh, Energy
@@ -19,10 +21,24 @@ from codecarbon.input import DataSource, DataSourceException
 
 class Emissions:
     def __init__(
-        self, data_source: DataSource, co2_signal_api_token: Optional[str] = None
+        self,
+        data_source: DataSource,
+        co2_signal_api_token: Optional[str] = None,
+        grid_emission_mode: str = "om",  # 可选值 "om" 或 "bm"
     ):
         self._data_source = data_source
         self._co2_signal_api_token = co2_signal_api_token
+        self._grid_emission_mode = grid_emission_mode.lower()
+        self._china_grid_factors = self._load_china_grid_factors()
+
+    def _load_china_grid_factors(self) -> Dict[str, Dict[str, float]]:
+        try:
+            file_path = os.path.join(os.path.dirname(__file__), "../data/china_grid_factors.json")
+            with open(file_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            logger.error(f"Failed to load china_grid_factors.json: {e}")
+            return {}
 
     def get_cloud_emissions(
         self, energy: Energy, cloud: CloudMetadata, geo: GeoMetadata = None
@@ -118,20 +134,30 @@ class Emissions:
 
     def get_private_infra_emissions(self, energy: Energy, geo: GeoMetadata) -> float:
         """
-        Computes emissions for private infra
+        Computes emissions for private infra.
         :param energy: Mean power consumption of the process (kWh)
-        :param geo: Country and region metadata
+        :param geo: GeoMetadata object with region info
         :return: CO2 emissions in kg
         """
+        if geo.country_name and "china" in geo.country_name.lower():
+            grid_area = geo.get_grid_area(mode=self._grid_emission_mode)
+            logger.info(f"[Emissions] 使用区域电网：{grid_area}")
+            emission_data = self._china_grid_factors.get(grid_area)
+            if emission_data:
+                emission_factor = emission_data.get(self._grid_emission_mode)
+                if emission_factor:
+                    emissions = emission_factor * energy.kWh
+                    logger.info(f"[Emissions] 使用 {self._grid_emission_mode.upper()} 因子：{emission_factor} kgCO₂/kWh")
+                    return emissions
+                else:
+                    logger.warning(f"[Emissions] 区域 '{grid_area}' 无 {self._grid_emission_mode.upper()} 因子，使用国家平均值代替。")
+
+        # fallback to原有逻辑
         if self._co2_signal_api_token:
             try:
                 return co2_signal.get_emissions(energy, geo, self._co2_signal_api_token)
             except Exception as e:
-                logger.error(
-                    "co2_signal.get_emissions: "
-                    + str(e)
-                    + " >>> Using CodeCarbon's data."
-                )
+                logger.error(f"co2_signal.get_emissions failed: {e}, fallback to CodeCarbon data.")
 
         compute_with_regional_data: bool = (geo.region is not None) and (
             geo.country_iso_code.upper() in ["USA", "CAN"]
@@ -142,10 +168,7 @@ class Emissions:
                 return self.get_region_emissions(energy, geo)
             except Exception as e:
                 logger.error(e, exc_info=True)
-                logger.warning(
-                    "Regional emissions retrieval failed."
-                    + " Falling back on country emissions."
-                )
+                logger.warning("Regional emissions retrieval failed. Falling back on country emissions.")
         return self.get_country_emissions(energy, geo)
 
     def get_region_emissions(self, energy: Energy, geo: GeoMetadata) -> float:

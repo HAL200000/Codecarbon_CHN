@@ -2,6 +2,7 @@
 Encapsulates external dependencies to retrieve cloud and geographical metadata
 """
 
+import os
 import re
 import urllib.parse
 from dataclasses import dataclass
@@ -97,6 +98,7 @@ class GeoMetadata:
         )
         # Nominatim 只在最后兜底用一次
         self._geolocator = Nominatim(user_agent="codecarbon_geo", timeout=5)
+        
 
     # ---------- 打印 ----------
     def __repr__(self) -> str:
@@ -119,19 +121,25 @@ class GeoMetadata:
         return None
 
     # ---------- 2. 主要接口：返回电网区域 ----------
-    def get_grid_area(self) -> str:
+    def get_grid_area(self, mode: str = "om") -> str:
+        mode = mode.lower()
+
+        # ✅ 如果已经有 grid_area 并且当前模式下的 emission_factor 也已缓存，则直接返回
+        if getattr(self, "grid_area", None) and getattr(self, "grid_emission_factor_mode", None) == mode:
+            return self.grid_area
+
+        # ⚠️ 否则继续定位
         data = self._query_ip_location()
         BAIDU_AK = "IyaMPVrnoEFRghWqzanAawrY7ol2dh2K"
+        GRID_FACTOR_PATH = os.path.join(os.path.dirname(__file__), "../data/china_grid_factors.json")
 
         if data:
-            # ---- 同步基本地理信息 ----
-            self.latitude  = data.get("latitude") or data.get("lat")
+            self.latitude = data.get("latitude") or data.get("lat")
             self.longitude = data.get("longitude") or data.get("lon")
             self.country_name = data.get("country")
             self.country_iso_code = data.get("country_code3") or data.get("countryCode") or self.country_iso_code
             self.region = (data.get("region") or data.get("regionName") or self.region or "").lower()
 
-        # ---- 百度 API 补全 region（如果缺）----
         if self.country_name and "china" in self.country_name.lower():
             if not self.region and self.latitude and self.longitude:
                 try:
@@ -146,7 +154,6 @@ class GeoMetadata:
                     logger.info(f"[GeoMetadata] 百度定位补充省份: {self.region}")
                 except Exception as e:
                     logger.warning(f"[GeoMetadata] 百度API反查失败: {e}")
-                    # Nominatim 再兜底
                     try:
                         loc = self._geolocator.reverse((self.latitude, self.longitude))
                         addr = loc.raw.get("address", {}) if loc else {}
@@ -155,13 +162,26 @@ class GeoMetadata:
                     except Exception as e:
                         logger.warning(f"[GeoMetadata] Nominatim 反查失败: {e}")
 
-        # ---- 最终统一匹配逻辑（中英文兼容）----
-        if self.country_name and "china" in self.country_name.lower():
             region_key = (self.region or "").lower().replace("省", "").replace("市", "").replace("自治区", "").strip()
             grid_area = GRID_AREA_MAPPING.get(self.region) or GRID_AREA_MAPPING.get(region_key)
+            self.grid_area = grid_area  # ✅ 缓存区域
+
+            try:
+                with open(GRID_FACTOR_PATH, "r", encoding="utf-8") as f:
+                    factor_data = json.load(f)
+                if grid_area in factor_data:
+                    self.grid_emission_factor = factor_data[grid_area].get(mode)
+                    self.grid_emission_factor_mode = mode
+                    logger.info(f"[GeoMetadata] 匹配排放因子: {self.grid_emission_factor} ({mode.upper()})")
+            except Exception as e:
+                logger.warning(f"[GeoMetadata] 加载排放因子失败: {e}")
+
             return grid_area or "未知"
         else:
             return "非中国地区"
+
+
+
 
 
 
