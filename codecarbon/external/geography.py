@@ -13,6 +13,16 @@ import requests
 from codecarbon.core.cloud import get_env_cloud_details
 from codecarbon.external.logger import logger
 
+import json
+from pathlib import Path
+
+# 假设 JSON 文件在当前目录
+GRID_JSON_PATH = Path(__file__).parent / "grid_area_mapping.json"
+
+with open(GRID_JSON_PATH, "r", encoding="utf-8") as f:
+    GRID_AREA_MAPPING = json.load(f)
+
+
 PROXY = "http://127.0.0.1:7890"
 
 PROXIES = {
@@ -20,17 +30,6 @@ PROXIES = {
     "https": PROXY,
 }
 
-# 电网区域映射字典
-GRID_AREA_MAPPING = {
-    "beijing": "华北", "tianjin": "华北", "hebei": "华北", "shanxi": "华北",
-    "shandong": "华北", "neimenggu": "华北", "liaoning": "东北", "jilin": "东北",
-    "heilongjiang": "东北", "shanghai": "华东", "jiangsu": "华东", "zhejiang": "华东",
-    "anhui": "华东", "fujian": "华东", "henan": "华中", "hubei": "华中",
-    "hunan": "华中", "jiangxi": "华中", "shaanxi": "西北", "gansu": "西北",
-    "qinghai": "西北", "ningxia": "西北", "xinjiang": "西北", "guangdong": "南方",
-    "guangxi": "南方", "yunnan": "南方", "guizhou": "南方", "hainan": "南方",
-    "sichuan": "西南", "chongqing": "西南"
-}
 @dataclass
 class CloudMetadata:
     provider: Optional[str]
@@ -122,51 +121,49 @@ class GeoMetadata:
     # ---------- 2. 主要接口：返回电网区域 ----------
     def get_grid_area(self) -> str:
         data = self._query_ip_location()
+        BAIDU_AK = "IyaMPVrnoEFRghWqzanAawrY7ol2dh2K"
+
         if data:
-            # ---- 同步经纬度、国家、省份 ----
+            # ---- 同步基本地理信息 ----
             self.latitude  = data.get("latitude") or data.get("lat")
             self.longitude = data.get("longitude") or data.get("lon")
             self.country_name = data.get("country")
-            # geojs: country_code3 / ip-api: countryCode
-            self.country_iso_code = (
-                data.get("country_code3") or data.get("countryCode") or self.country_iso_code
-            )
-            # geojs: region / ip-api: regionName
+            self.country_iso_code = data.get("country_code3") or data.get("countryCode") or self.country_iso_code
             self.region = (data.get("region") or data.get("regionName") or self.region or "").lower()
 
-            # ---- 中国境内：按省份映射电网区域 ----
-            if self.country_name and "china" in self.country_name.lower():
-                if not self.region and self.latitude and self.longitude:
+        # ---- 百度 API 补全 region（如果缺）----
+        if self.country_name and "china" in self.country_name.lower():
+            if not self.region and self.latitude and self.longitude:
+                try:
+                    baidu_url = (
+                        f"http://api.map.baidu.com/reverse_geocoding/v3/"
+                        f"?ak={BAIDU_AK}&output=json&location={self.latitude},{self.longitude}"
+                    )
+                    res = requests.get(baidu_url, timeout=8)
+                    res.raise_for_status()
+                    result = res.json().get("result", {})
+                    self.region = result.get("addressComponent", {}).get("province", "").lower()
+                    logger.info(f"[GeoMetadata] 百度定位补充省份: {self.region}")
+                except Exception as e:
+                    logger.warning(f"[GeoMetadata] 百度API反查失败: {e}")
+                    # Nominatim 再兜底
                     try:
-                        # 主动用经纬度进行反查
                         loc = self._geolocator.reverse((self.latitude, self.longitude))
                         addr = loc.raw.get("address", {}) if loc else {}
                         self.region = addr.get("state", "").lower()
+                        logger.info(f"[GeoMetadata] Nominatim 补充省份: {self.region}")
                     except Exception as e:
                         logger.warning(f"[GeoMetadata] Nominatim 反查失败: {e}")
 
-                # 尝试匹配省份
-                for province, grid_area in GRID_AREA_MAPPING.items():
-                    if province in (self.region or ""):
-                        return grid_area
-                return "未知"
+        # ---- 最终统一匹配逻辑（中英文兼容）----
+        if self.country_name and "china" in self.country_name.lower():
+            region_key = (self.region or "").lower().replace("省", "").replace("市", "").replace("自治区", "").strip()
+            grid_area = GRID_AREA_MAPPING.get(self.region) or GRID_AREA_MAPPING.get(region_key)
+            return grid_area or "未知"
+        else:
+            return "非中国地区"
 
-        # ---------- 3. 两个 IP‑API 都失败时兜底 ----------
-        try:
-            if self.latitude and self.longitude:
-                loc = self._geolocator.reverse((self.latitude, self.longitude))
-                addr = loc.raw.get("address", {}) if loc else {}
-                self.country_name = self.country_name or addr.get("country")
-                self.region = self.region or addr.get("state", "").lower()
 
-                if self.country_name and "china" in self.country_name.lower():
-                    for province, grid_area in GRID_AREA_MAPPING.items():
-                        if province in self.region:
-                            return grid_area
-            return "未知"
-        except Exception as e:
-            logger.warning(f"[GeoMetadata] Nominatim 兜底失败: {e}")
-            return "未知"
 
     # ---------- 4. 保留原有 from_geo_js（供 codecarbon 其他逻辑使用） ----------
     @classmethod
@@ -209,3 +206,4 @@ class GeoMetadata:
                 longitude=-71.2,
                 country_2letter_iso_code="CA",
             )
+        
