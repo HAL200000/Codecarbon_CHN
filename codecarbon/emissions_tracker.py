@@ -420,7 +420,7 @@ class BaseEmissionsTracker(ABC):
             logger.warning("Already started tracking")
             return
         
-         # ✅ 主动调用 get_grid_area，确保 geo 中的因子和模式正确缓存
+        # ✅ 主动调用 get_grid_area，确保 geo 中的因子和模式正确缓存
         if self._geo:
             self._geo.get_grid_area(mode=self._grid_emission_mode)
 
