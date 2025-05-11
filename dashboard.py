@@ -1,3 +1,4 @@
+import json
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -84,6 +85,7 @@ colb1, colb2 = st.columns(2)
 colb1.plotly_chart(fig_bar, use_container_width=True)
 colb2.plotly_chart(fig_pie, use_container_width=True)
 
+
 # 碳排放时间走势（用户自定义查看数量，横轴使用序号避免时间间距问题）
 st.subheader("📉 单次碳排放趋势（自定义次数，横轴为序号）")
 n_curve = st.slider("显示最近 N 次实验的排放变化曲线", min_value=3, max_value=len(df), value=10)
@@ -97,5 +99,53 @@ st.plotly_chart(fig_time, use_container_width=True)
 toggle = st.checkbox("显示 emissions.csv 原始数据")
 if toggle:
     st.dataframe(df)
+    
+# 🗺️ 地图高亮最近 N 次实验所在省份
+st.subheader("🗺️ 最近实验涉及的运行地区（省份级）")
+
+# 准备数据：统计最近 N 次实验的省份出现频次
+province_counts = df_curve["region"].value_counts().reset_index()
+province_counts.columns = ["省份英文名", "出现次数"]
+
+# 中文映射：将英文拼写转为中文（可以视需要精细化）
+province_en2zh_full = {
+    "beijing": "北京市", "shanghai": "上海市", "guangdong": "广东省", "henan": "河南省",
+    "shaanxi": "陕西省", "sichuan": "四川省", "liaoning": "辽宁省", "zhejiang": "浙江省",
+    "jiangsu": "江苏省", "shandong": "山东省", "hebei": "河北省", "shanxi": "山西省",
+    "anhui": "安徽省", "fujian": "福建省", "hubei": "湖北省", "hunan": "湖南省",
+    "jiangxi": "江西省", "guangxi": "广西壮族自治区", "yunnan": "云南省", "guizhou": "贵州省",
+    "hainan": "海南省", "tianjin": "天津市", "chongqing": "重庆市", "heilongjiang": "黑龙江省",
+    "jilin": "吉林省", "gansu": "甘肃省", "qinghai": "青海省", "ningxia": "宁夏回族自治区",
+    "xinjiang": "新疆维吾尔自治区", "neimenggu": "内蒙古自治区"
+}
+
+province_counts["省份"] = province_counts["省份英文名"].map(province_en2zh_full)
+
+province_counts["是否高亮"] = 1  # 所有最近 N 次实验涉及的省份都高亮
+
+# 全省份 DataFrame：用于显示未涉及省份的背景色
+all_provinces = list(province_en2zh_full.values())
+df_map = pd.DataFrame({"省份": all_provinces})
+df_map["是否高亮"] = df_map["省份"].isin(province_counts["省份"]).astype(int)
+
+
+# 加载本地 geojson（推荐使用阿里云的 100000_full.json）
+with open("100000_full.json", "r", encoding="utf-8") as f:
+    china_geo = json.load(f)
+
+fig_map = px.choropleth(
+    df_map,
+    geojson=china_geo,
+    featureidkey="properties.name",  # 非常关键，必须与你的 GeoJSON 字段匹配
+    locations="省份",
+    color="是否高亮",
+    color_continuous_scale=[[0, "#dddddd"], [1, "#ff6347"]],
+    range_color=(0, 1),
+    title="最近 N 次实验涉及的省份（橙色高亮）"
+)
+fig_map.update_geos(fitbounds="locations", visible=False)
+fig_map.update_layout(margin={"r":0,"t":40,"l":0,"b":0})
+st.plotly_chart(fig_map, use_container_width=True)
+
 
 st.caption("Copyright © 2025 Zhang Jiayuan | CodeCarbon Dashboard")
